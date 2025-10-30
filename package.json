@@ -1,0 +1,42 @@
+{
+  "name": "news-chatbot-using-rag-pipeline",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "ingest": "node src/scripts/ingestNews.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/s-gowtham-d/news-chatbot-using-rag-pipeline.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/s-gowtham-d/news-chatbot-using-rag-pipeline/issues"
+  },
+  "homepage": "https://github.com/s-gowtham-d/news-chatbot-using-rag-pipeline#readme",
+  "dependencies": {
+    "@google/genai": "^1.28.0",
+    "@google/generative-ai": "^0.24.1",
+    "@qdrant/js-client-rest": "^1.15.1",
+    "@qdrant/qdrant-js": "^1.15.1",
+    "axios": "^1.13.1",
+    "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "redis": "^5.9.0",
+    "socket.io": "^4.8.1",
+    "uuid": "^13.0.0",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
