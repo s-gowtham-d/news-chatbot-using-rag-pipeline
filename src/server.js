@@ -83,6 +83,61 @@ io.on("connection", (socket) => {
     }
   })();
 
+  // socket.on("userMessage", async ({ content }) => {
+  //   if (!content || !content.trim()) {
+  //     console.log("⚠️ Empty message received");
+  //     return;
+  //   }
+
+  //   console.log(`💬 Message from ${sessionId}: "${content}"`);
+
+  //   try {
+  //     const histData = await redis.get(key);
+  //     const conversationHistory = JSON.parse(histData || "[]");
+      
+  //     const timestamp = new Date().toISOString();
+      
+  //     conversationHistory.push({ 
+  //       user: content, 
+  //       bot: "", 
+  //       timestamp 
+  //     });
+  //     await redis.set(key, JSON.stringify(conversationHistory), { EX: process.env.REDIS_TTL || 86400 });
+
+  //     const docs = await retrieveRelevantDocs(content);
+  //     console.log(`📚 Found ${docs.length} docs`);
+      
+  //     const context = docs.map(d => d.text).join("\n\n");
+
+  //     socket.emit("streamStart");
+
+  //     const previousMessages = conversationHistory.slice(0, -1); // Exclude current
+  //     const stream = await getStreamingResponseFromGemini(
+  //       content, 
+  //       context, 
+  //       previousMessages 
+  //     );
+      
+  //     let fullResponse = "";
+
+  //     for await (const chunk of stream) {
+  //       const token = chunk.text();
+  //       fullResponse += token;
+  //       socket.emit("token", token);
+  //     }
+
+  //     conversationHistory[conversationHistory.length - 1].bot = fullResponse;
+  //     await redis.set(key, JSON.stringify(conversationHistory), { EX: process.env.REDIS_TTL || 86400 });
+      
+  //     socket.emit("responseEnd");
+  //     console.log(`✅ Response complete (${fullResponse.length} chars)`);
+
+  //   } catch (err) {
+  //     console.error("❌ Error:", err);
+  //     socket.emit("token", "Sorry, I encountered an error. Please try again.");
+  //     socket.emit("responseEnd");
+  //   }
+  // });
   socket.on("userMessage", async ({ content }) => {
     if (!content || !content.trim()) {
       console.log("⚠️ Empty message received");
@@ -92,11 +147,13 @@ io.on("connection", (socket) => {
     console.log(`💬 Message from ${sessionId}: "${content}"`);
 
     try {
+      // Get conversation history
       const histData = await redis.get(key);
       const conversationHistory = JSON.parse(histData || "[]");
       
       const timestamp = new Date().toISOString();
       
+      // Store user message
       conversationHistory.push({ 
         user: content, 
         bot: "", 
@@ -104,28 +161,57 @@ io.on("connection", (socket) => {
       });
       await redis.set(key, JSON.stringify(conversationHistory), { EX: 86400 });
 
-      const docs = await retrieveRelevantDocs(content);
+      // Retrieve documents WITH conversation context
+      const previousMessages = conversationHistory.slice(0, -1);
+      const docs = await retrieveRelevantDocs(content, previousMessages);
       console.log(`📚 Found ${docs.length} docs`);
       
+      // Check if we have relevant context
+      if (docs.length === 0) {
+        socket.emit("streamStart");
+        const fallbackMsg = "I don't have any relevant news articles about that topic. Could you try asking about something else?";
+        
+        for (let char of fallbackMsg) {
+          socket.emit("token", char);
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        
+        conversationHistory[conversationHistory.length - 1].bot = fallbackMsg;
+        await redis.set(key, JSON.stringify(conversationHistory), { EX: 86400 });
+        socket.emit("responseEnd");
+        return;
+      }
+
       const context = docs.map(d => d.text).join("\n\n");
 
+      // Stream response
       socket.emit("streamStart");
 
-      const previousMessages = conversationHistory.slice(0, -1); // Exclude current
       const stream = await getStreamingResponseFromGemini(
         content, 
         context, 
-        previousMessages 
+        previousMessages,
+        docs  // Pass full docs array for links
       );
       
       let fullResponse = "";
 
       for await (const chunk of stream) {
         const token = chunk.text();
-        fullResponse += token;
-        socket.emit("token", token);
+        if (token && token.trim()) {
+          fullResponse += token;
+          socket.emit("token", token);
+        }
       }
 
+      // Validate response
+      if (fullResponse.trim().length === 0) {
+        console.warn("⚠️ Empty response from Gemini");
+        fullResponse = "I found some relevant articles but couldn't generate a proper response. Please try rephrasing your question.";
+        socket.emit("token", fullResponse);
+      }
+
+      // Save complete response
       conversationHistory[conversationHistory.length - 1].bot = fullResponse;
       await redis.set(key, JSON.stringify(conversationHistory), { EX: 86400 });
       
@@ -134,11 +220,12 @@ io.on("connection", (socket) => {
 
     } catch (err) {
       console.error("❌ Error:", err);
-      socket.emit("token", "Sorry, I encountered an error. Please try again.");
+      socket.emit("streamStart");
+      const errorMsg = "Sorry, I encountered an error. Please try again.";
+      socket.emit("token", errorMsg);
       socket.emit("responseEnd");
     }
   });
-
   socket.on("clearSession", async () => {
     try {
       await redis.del(key);

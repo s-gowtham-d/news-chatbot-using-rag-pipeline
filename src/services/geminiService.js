@@ -1,16 +1,80 @@
-/**
- * Gemini Service
- * Handles interactions with Google Gemini API
- */
+// /**
+//  * Gemini Service
+//  * Handles interactions with Google Gemini API
+//  */
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { analyzeQueryIntent } from "./vectorService.js";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-export const getStreamingResponseFromGemini = async (query, context, conversationHistory = []) => {
+/**
+ * Build context-aware prompt based on intent
+ */
+const buildPrompt = (query, context, conversationHistory, intent, docs) => {
+  // Build conversation context
+  let conversationContext = "";
+  if (conversationHistory.length > 0) {
+    conversationContext = "\n\nPrevious conversation:\n";
+    conversationHistory.slice(-3).forEach(msg => {
+      conversationContext += `User: ${msg.user}\nAssistant: ${msg.bot}\n\n`;
+    });
+  }
+
+  // Base instructions
+  let instructions = `You are a helpful news assistant. Answer naturally and conversationally.
+
+CRITICAL RULES:
+- ALWAYS provide a response (never return empty text)
+- Write in plain paragraphs (NO bullet points, asterisks, or markdown)
+- Be conversational and friendly
+- Keep responses concise but informative
+- Give Article Links when relevant and possible
+- If the context doesn't fully answer the question, provide what information you do have
+- If you're unsure, say so and offer what you do know
+- Reference previous conversation when relevant`;
+
+
+  // Customize based on intent
+  if (intent === 'list' || intent === 'summary') {
+    instructions += `\n- Provide a brief summary of the main news stories (2-3 sentences per story)
+- Keep it concise but informative`;
+  } else if (intent === 'details') {
+    instructions += `\n- Provide more detailed information based on the context
+- Elaborate on the topic from previous conversation`;
+  } else if (intent === 'links') {
+    instructions += `\n- Mention article titles and include links if available
+- Format naturally: "You can read more about [topic] at [link]"`;
+  }
+
+  // Add available links if present
+  let linksInfo = "";
+  if (docs && docs.length > 0) {
+    const docsWithLinks = docs.filter(d => d.link);
+    if (docsWithLinks.length > 0) {
+      linksInfo = "\n\nAvailable article links:\n";
+      docsWithLinks.forEach(d => {
+        linksInfo += `- ${d.title}: ${d.link}\n`;
+      });
+    }
+  }
+
+  return `${instructions}
+
+News Articles:
+${context}
+${linksInfo}
+${conversationContext}
+
+User's Question: ${query}
+
+Your Response:`;
+};
+
+export const getStreamingResponseFromGemini = async (query, context, conversationHistory = [], docs = []) => {
   try {
     const model = genAI.getGenerativeModel({ 
       model: "gemini-2.5-flash",
@@ -18,46 +82,41 @@ export const getStreamingResponseFromGemini = async (query, context, conversatio
         temperature: 0.7,
         topK: 40,
         topP: 0.95,
-        maxOutputTokens: 800,
-      }
+        maxOutputTokens: 1024,
+      },
+      safetySettings: [
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+      ],
     });
 
-    let conversationContext = "";
-    if (conversationHistory.length > 0) {
-      conversationContext = "\n\nPrevious conversation:\n";
-      conversationHistory.slice(-6).forEach(msg => {  
-        conversationContext += `User: ${msg.user}\nAssistant: ${msg.bot}\n\n`;
-      });
-    }
+    // Analyze query intent
+    const intent = analyzeQueryIntent(query);
+    console.log(`🎯 Detected intent: ${intent}`);
 
-    const prompt = `You are a helpful news assistant chatbot. Answer questions based on the provided news context and previous conversation.
-
-CRITICAL RULES:
-1. ALWAYS provide a response - NEVER return empty text
-2. If the context doesn't fully answer the question, provide what information you do have
-3. Write in a natural, conversational tone (like you're chatting with a friend)
-4. Keep responses concise but informative (2-4 sentences)
-5. DO NOT use bullet points, asterisks, or markdown formatting
-6. Reference previous conversation when relevant
-7. If you're unsure, say so and offer what you do know
-
-News Context:
-${context || 'No relevant news articles found.'}
-${conversationContext}
-
-Current User Question: ${query}
-
-Response (in plain conversational text):`;
+    // Build context-aware prompt
+    const prompt = buildPrompt(query, context, conversationHistory, intent, docs);
 
     const result = await model.generateContentStream(prompt);
     return result.stream;
+    
   } catch (err) {
     console.error("❌ Gemini streaming error:", err.message);
-    throw err;
+    
+    // Return fallback stream
+    return {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          text: () => "I apologize, but I'm having trouble generating a response right now. Please try again."
+        };
+      }
+    };
   }
 };
 
-export const getResponseFromGemini = async (query, context, conversationHistory = []) => {
+export const getResponseFromGemini = async (query, context, conversationHistory = [], docs = []) => {
   try {
     const model = genAI.getGenerativeModel({ 
       model: "gemini-2.5-flash",
@@ -65,47 +124,27 @@ export const getResponseFromGemini = async (query, context, conversationHistory 
         temperature: 0.7,
         topK: 40,
         topP: 0.95,
-        maxOutputTokens: 800,
+        maxOutputTokens: 1024,
       }
     });
 
-    let conversationContext = "";
-    if (conversationHistory.length > 0) {
-      conversationContext = "\n\nPrevious conversation:\n";
-      conversationHistory.slice(-6).forEach(msg => {
-        conversationContext += `User: ${msg.user}\nAssistant: ${msg.bot}\n\n`;
-      });
-    }
+    const intent = analyzeQueryIntent(query);
+    console.log(`🎯 Detected intent: ${intent}`);
 
-    const prompt = `You are a helpful news assistant chatbot. Answer questions based on the provided news context and previous conversation.
-
-IMPORTANT FORMATTING RULES:
-- Write in clear, conversational paragraphs
-- DO NOT use bullet points or lists
-- DO NOT use asterisks or special markdown
-- Keep responses concise (2-3 sentences unless asked for details)
-- Reference previous conversation when relevant
-- If asked about something not in the context, politely say you don't have that information about the news
-- Always provide a response
-- If unsure, provide what information you do have
-- Maintain a friendly and engaging tone
-- If user want more details, provide them in follow-up responses
-- Stay relevant to the news context provided and based on previous conversation
-
-News Context:
-${context || 'No relevant news articles found.'}
-Previous Conversation:
-${conversationContext}
-
-Current User Question: ${query}
-
-Response (in plain conversational text):`;
+    const prompt = buildPrompt(query, context, conversationHistory, intent, docs);
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    return response.text();
+    const text = response.text();
+    
+    if (!text || text.trim().length === 0) {
+      return "I found relevant articles but had trouble formulating a response. Could you rephrase your question?";
+    }
+    
+    return text;
+    
   } catch (err) {
     console.error("❌ Gemini API error:", err.message);
-    return "I encountered an error while generating a response. Please try again.";
+    return "I'm having trouble generating a response right now. Please try again.";
   }
 };
